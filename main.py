@@ -1,7 +1,12 @@
 import os
+import sys
 import random
 import time
 import discord
+import pip
+import ffmpeg
+import yt2mp3
+pip.main(["install", "discord.py[voice]","-q", "-U", "--upgrade"])
 
 def read_key_file():
     try:
@@ -26,13 +31,93 @@ async def on_ready():
     me = client.user
     jalsebot = me.id
     print(f'{me} has connected to Discord!')
-    g = await select_from_list(client.guilds)
-    print(f'{me} is in {g}')
-    await save_emoji_list(g)
-    channel = await select_from_list(g.channels)
-    await start_loop(channel)
+    if 3 == len(sys.argv) and sys.argv[1].isdigit and sys.argv[2].isdigit:
+        g = client.guilds[int(sys.argv[1])]
+        channel = g.channels[int(sys.argv[2])]
+    else:
+        g = await select_from_list(client.guilds)
+        print(f'{me} is in {g}')
+        await save_emoji_list(g)
+        channel = await select_from_list(g.channels)
+    match type(channel):
+        case discord.channel.TextChannel:
+            await start_loop(channel)
+        case discord.channel.VoiceChannel:
+            #channel = discord.channel.VoiceChannel(channel)
+            voice = await channel.connect()
+            await voice_commands(channel,voice)
+                
+async def song_list(channel):
+    current_directory = os.getcwd()
+    song_directory = os.path.join(current_directory, "audio")
+    out = []
+    for file in os.listdir(song_directory):
+        out.append(file.rsplit(".")[0])
+    chunks = await break_string_into_chunks("\n".join(out))
+    for chunk in chunks:
+        await channel.send(chunk)
+    return JOE_BIDEN
 
+async def get_song_str(filename:str):
+    current_directory = os.getcwd()
+    pictures_directory = os.path.join(current_directory, "audio")
+    for file in os.listdir(pictures_directory):
+        file_name = file.rsplit(".")[0]
+        if file_name.lower() == filename.lower():
+            return os.path.join("audio",file)
+        
+    return os.path.join("pictures","error.png")
 
+            
+async def voice_commands(channel:discord.channel.VoiceChannel,voice):
+    stopped = False
+    try: 
+        while not stopped:
+            try:
+                async for message in channel.history(limit=1):
+                    out = message.content
+                    user = message.author
+                    output = ""
+                    try:
+                        attatchment = message.attachments[0]
+                    except:
+                        attatchment = None
+                    tokens = await interpret(out)
+                    if tokens:
+                        match tokens[0]:
+                            case "play":
+                                song = ""
+                                if tokens[1].startswith("https"):
+                                    song = await yt2mp3.download_youtube_video_as_mp3(tokens[1])
+                                elif tokens[1]:
+                                    song = await get_song_str(" ".join(tokens[1:len(tokens)]))
+                                else:
+                                    song = "never gonna give you up" 
+                                
+                                playable = discord.FFmpegPCMAudio(executable="ffmpeg/bin/ffmpeg.exe", source=song)
+                                output = f"playing {song.split("\\")[1].split(".")[0]}"
+                                voice.play(playable)
+                            case "stop":
+                                if voice.is_playing():
+                                    output = "stopping"
+                                    voice.stop()
+                            case "list":
+                                output = await song_list(channel)
+                        await channel.send(content=output)
+                                
+     
+            except Exception as error:
+                message = "error"
+                print(error)
+    except:
+        print("stopped")
+async def interpret(s:str):
+    if s[0] == "|":
+        x = s[1:len(s)].split(" ")
+        print(x)
+        return x 
+    else:
+        return None
 async def get_emoji_list(server:discord.guild.Guild):
     l = ""
     c = 0
@@ -83,12 +168,14 @@ async def start_loop(channel:discord.channel.TextChannel):
     stopped = False
     out = ""
     attatchment = ""
+    user = ""
     await channel.send(f"{ME} is listening")
     try: 
         while not stopped:
             try:
                 async for message in channel.history(limit=1):
                     out = message.content
+                    user = message.author
                     try:
                         attatchment = message.attachments[0]
                     except:
@@ -96,29 +183,40 @@ async def start_loop(channel:discord.channel.TextChannel):
             except Exception as error:
                 message = "error"
                 print(error)
-            stopped = await int_and_respond(channel,out,attatchment)
+            stopped = await int_and_respond(channel,out,attatchment,user)
             time.sleep(SECONDS_PER_TICK)
     except Exception as e:
         print("Stopped!")
         await channel.send(f"{ME} has stopped listening")
         quit()
 
-async def int_and_respond(channel:discord.channel.TextChannel,message,attatch):
+async def int_and_respond(channel:discord.channel.TextChannel,message,attatch,user):
     guild = channel.last_message.guild
-    output = "default"
+    output = ""
     pic_out = None
+    join_meme = False
     if message:
         if message[0] == "|":
             message = message[1:len(message)]
             tokens = message.split(" ")
             match tokens[0].lower():
-                case "help":
-                    output = await help()
-                case "scrub":
-                    if tokens[1].isdigit():
-                        output = await scrub_messages(channel,int(tokens[1]))
+                case "join":
+                    if join_meme:
+                        output = "THIS DOESN'T DO ANY THING YET"
+                        join_meme = True
                     else:
-                        output = await scrub_messages(channel,50)
+                        output = "stop it."
+                    
+                case "source":
+                    output = await send_text("source")
+                case "help":
+                    output = await send_text("help")
+                case "scrub":
+                    if len(tokens) >= 2:
+                        if tokens[1].isdigit():
+                            output = await scrub_messages(channel,int(tokens[1]))
+                        else:
+                            output = await scrub_messages(channel,50)
                 case "emoji":
                     if tokens[1].isdigit():
                         output = await random_emoji_list(guild,int(tokens[1]))
@@ -155,12 +253,15 @@ async def int_and_respond(channel:discord.channel.TextChannel,message,attatch):
                     print(f"\nSending the picture {output}")
                 case "piclist":
                     output = await picture_list(channel)
-    
-            if pic_out:
-                await channel.send(output, file=pic_out)
-            else: 
-                await channel.send(output)
+            if output != "":
+                if pic_out:
+                    await channel.send(output, file=pic_out)
+                else: 
+                    await channel.send(output)
     return False
+async def join(ctx):
+    channel = ctx.author.voice.channel
+    await channel.connect()
 
 async def scrub_messages(channel:discord.channel.TextChannel,range:int):
     c = 0
@@ -202,9 +303,10 @@ async def random_emoji(server:discord.guild.Guild):
                 print(e)
                 return "random emoji get failed"
     
-async def help():
+async def send_text(filename:str):
+    name = os.path.join("text",f"{filename}.txt")
     try:
-        with open("help.txt", "r") as file:
+        with open(name, "r") as file:
             return file.read()
     except:
         return None
@@ -259,7 +361,6 @@ async def get_picture_str(filename:str):
         
     return os.path.join("pictures","error.png")
 
-
 async def ROLL(tokens):
     print("\nRolling")
     if len(tokens)>1:
@@ -273,4 +374,4 @@ async def roll_n_dice(sides:int):
 try:
     client.run(TOKEN)
 except:
-    print("this shit is FUCKED")
+    print("A fatal errors occured. RIP.")
